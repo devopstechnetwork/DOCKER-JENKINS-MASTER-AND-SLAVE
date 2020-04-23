@@ -124,5 +124,6 @@ post {
         echo "Build aborted!" 
         slackSend (channel: "${env.SLACK_CHANNEL}", color: "${env.SLACK_COLOR_WARNING}", message: "*ABORTED:* Job '${env.JOB_NAME} [${env.COMMIT_ID}]' (${env.BUILD_URL})") 
     } 
+    
   } 
 }
