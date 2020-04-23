@@ -1,0 +1,128 @@
+pipeline {
+    agent any
+    environment {
+        AWS_REGION = ""
+        TIER = ""
+        ECR_URI_DEV = ""
+        ECR_REGISTRY = "" + "${env.TIER}"
+        COMMIT_ID = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+        
+        // Slack configuration
+        SLACK_CHANNEL       = "#mvp-jenkins-alerts"
+        SLACK_COLOR_DANGER  = "#E01563"
+        SLACK_COLOR_INFO    = "#6ECADC"
+        SLACK_COLOR_WARNING = "#FFC300"
+        SLACK_COLOR_GOOD    = "#3EB991"
+        JOB_NAME            = ""
+    }
+    stages {
+        stage('Build App') {
+            when {
+                branch 'master'
+            }
+            environment {
+                JAVA_HOME = "/usr/lib/jvm/jdk-12"
+            }
+            steps {
+                echo 'Building application'
+                sh "echo '${env.COMMIT_ID}' > src/main/resources/META-INF/resources/version.txt"
+                sh 'echo "$(date)" >> src/main/resources/META-INF/resources/version.txt'
+                sh '/opt/gradle/gradle-5.6.2/bin/gradle clean build'
+            }
+        }
+        stage('Unit Test') {
+            when {
+                branch 'master'
+            }
+            environment {
+                JAVA_HOME = "/usr/lib/jvm/jdk-12"
+            }
+            steps {
+                echo 'Running unit test'
+                sh '/opt/gradle/gradle-5.6.2/bin/gradle test'
+            }
+        }
+        stage('Code Coverage Test') {
+            when {
+                branch 'master'
+            }
+            environment {
+                JAVA_HOME = "/usr/lib/jvm/jdk-12"
+            }
+            steps {
+                echo 'Running code coverage test'
+                sh '/opt/gradle/gradle-5.6.2/bin/gradle jacocoTestCoverageVerification'
+                sh '/opt/gradle/gradle-5.6.2/bin/gradle jacocoTestReport'
+            }
+        }
+        stage('Build Docker Image') {
+            when {
+                branch 'master'
+            }
+            environment {
+                IMAGE_NAME = "${env.ECR_URI_DEV}" + "/" + "${env.ECR_REGISTRY}" + ":" + "${env.COMMIT_ID}"
+            }
+            steps {
+                script {
+                    app = docker.build(IMAGE_NAME)
+                }
+            }
+        } 
+        stage('Push Docker Image') {
+            when {
+                branch 'master'
+            }
+            steps {
+                script {
+                        docker.withRegistry("https://" + "${env.ECR_URI_DEV}" + "/" + "${env.ECR_REGISTRY}", 'ecr:' + "${env.AWS_REGION}" + ':AKIAQC7BKWXXRP5ULRLB') {
+                        app.push("${env.COMMIT_ID}")
+                    }
+                }
+            }
+        }
+       
+        stage('Deploy To EKS') {
+            when {
+                branch 'master'
+            }
+            environment {
+                ROOT_DOMAIN_NAME = ""
+
+            }
+            steps {
+                // input 'Deploy to Production?'
+                // milestone(1)
+                kubernetesDeploy(
+                    kubeconfigId: 'kubeconfig',
+                    configs: 'kube.yaml',
+                    enableConfigSubstitution: true
+                )
+            }
+        }
+    }
+post { 
+    always {
+        echo "One way or another, I have finished" 
+        //deleteDir() /* clean up our workspace */ 
+    } 
+    
+    // trigger when successful 
+    success { 
+        echo "I succeeeded!" 
+        slackSend (channel: "${env.SLACK_CHANNEL}", color: "${env.SLACK_COLOR_GOOD}", message: "*SUCCESS:* Job '${env.JOB_NAME} [${env.COMMIT_ID}]' (${env.BUILD_URL})") 
+    } 
+    
+    // trigger when failed 
+    failure { 
+        echo "I failed :(" 
+        //currentBuild.rawBuild.getLog(10) 
+        slackSend (channel: "${env.SLACK_CHANNEL}", color: "${env.SLACK_COLOR_DANGER}", message: "*FAILED:* Job '${env.JOB_NAME} [${env.COMMIT_ID}]' (${env.BUILD_URL})") 
+    } 
+    
+    // trigger when aborted 
+    aborted { 
+        echo "Build aborted!" 
+        slackSend (channel: "${env.SLACK_CHANNEL}", color: "${env.SLACK_COLOR_WARNING}", message: "*ABORTED:* Job '${env.JOB_NAME} [${env.COMMIT_ID}]' (${env.BUILD_URL})") 
+    } 
+  } 
+}
